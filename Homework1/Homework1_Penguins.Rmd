@@ -1,0 +1,324 @@
+---
+title: 'DS 622: Homwork 1 (Penguins Regressions)'
+subtitle: 'Logistic Regression'
+author: 'Donny Lofland'
+data: '2/14/2021'
+output:
+  html_document:
+    theme: cerulean
+    highlight: pygments
+    css: ./lab.css
+    toc: true
+    toc_float: true
+    code_folding: hide
+  pdf_document:
+    extra_dependencies: ["geometry", "multicol", "multirow", "xcolor"]
+---
+
+Source Code: [https://github.com/djlofland/DATA622_MachineLearning/tree/master/Homework1](https://github.com/djlofland/DATA622_MachineLearning/tree/master/Homework1)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+library(palmerpenguins)
+library(ggplot2)
+library(tibble)
+library(tidyr)
+library(tidyverse)
+library(dplyr)
+
+library(skimr)
+library(caret)
+library(naniar)
+library(RANN)
+library(MASS)
+
+library(corrplot)
+library(RColorBrewer)
+library(broom)
+library(mnlogit)
+library(nnet)
+library(broom)
+
+
+set.seed(424242)
+```
+
+## Instructions
+
+Let’s use the Penguin dataset for our assignment. To learn more about the dataset, please visit: [https://allisonhorst.github.io/palmerpenguins/articles/intro.html](https://allisonhorst.github.io/palmerpenguins/articles/intro.html)
+
+For this assignment, let us use `species` as our outcome or the dependent variable.
+
+1 Logistic Regression with a binary outcome. (40)
+
+a. The penguin dataset has `species` column. Please check how many categories
+you have in the species column. Conduct whatever data manipulation you need to do to be able to build a logistic regression with binary outcome. Please explain your reasoning behind your decision as you manipulate the outcome/dependent variable (species).
+
+b. Please make sure you are evaluating the independent variables appropriately in deciding which ones should be in the model.
+
+c. Provide variable interpretations in your model.
+
+2 For your model from #1, please provide: AUC, Accuracy, TPR, FPR, TNR, FNR (20)
+
+3 Multinomial Logistic Regression. (40)
+
+a. Please fit it a multinomial logistic regression where your outcome variable is
+`species`.
+
+b. Please be sure to evaluate the independent variables appropriately to fit your
+best parsimonious model.
+
+c. Please be sure to interpret your variables in the model.
+
+4 Extra credit: what would be some of the fit statistics you would want to evaluate for your model in question #3? Feel free to share whatever you can provide. (10)
+
+## 1. Binary Logistic Regression
+
+### EDA
+
+#### Load Data & Summary
+
+```{r}
+# Load dataframe
+df <- penguins %>% 
+  as_tibble()
+
+# show summary infio
+skim(df)
+```
+
+#### Plan of Attack
+
+Our dataset has the following independent features:
+
+* **Geography** - `island` (Biscoe, Dream or TorgerSen)
+* **Bill Dimensions** - `bill_length_mm` and `bill_depth_mm`
+* **Flipper Dimensions** - `flipper_length_mm`
+* **Overall Weight** - `body_weight_g`
+* **Gender** - `sex`
+* **Year** - `year` ... I assume this is the year the penguin was measured
+
+Our Dependent variable is `species`, a categorical variable with 3 distinct values: `Adelie`, `Chinstrap`, and `Gentoo`.
+
+### Recode `species` to a Binary outcome
+
+Our dataset contains data on 3 different species: `Adelie` (152 cases), `Chinstrap` (68 cases) and `Gentoo` (124 cases).  Since we have 3 outcomes, in order to do a binary (2 cases) classifier, we would have to either drop a category altogether or combine two groups into a single outcome.  The problem with dropping a category is that we cannot be assured that new cases for prediction would also drop the third group and the presence of a 3rd group in bew data could lead to very poor performance.  Since we are being asked to build a binary classifier, I will probably restate the problem as *"Build a classifier to identify whether a penguin is `Gentoo` or `not Gentoo`"*.  I'll pick the dominant class as this seems more useful, though if we were doing specific research on a given species, we might choose to use that species as the positive case.  
+
+Note - this first problem is contrived and a **very poorly designed**.  It would make far more sense to build a multigroup classifier for `species` (as in Part 3) - binary logistic regression actually makes little sense in this scenario.  If I were writing this problem, I would have asked us to build a logistic binary regression classifier on the `sex` feature since that only has 2 values.  That said, despite being a bad problem, I'll do as asked.  
+
+With this in mind, I'll create a new column, `Gentoo`, which is boolean, where `1` means `Gentoo` and 0 means `not Gentoo`.  I'll use this new feature as my target and ignore the existing `species` column when setting up my logistic regression.  I actually don't know the similarities or difference between the species, so through my arbitrary choice to make `Gentoo` the positive outcome, I may have greatly complicated the model by mixing the other two and overlapping variance within features.  My classifier may in fact do a terrible job through this arbitrary choice.
+
+Note that for logistic regression, we want to ensure class balance so we don't skew results by over training on one class.  My arbitrary choice of `Gentoo` vs `non-Gentoo` does lead to a class imbalance (124 `Gentoo` and `r 152 + 68` `non-Gentoo`).  In a more complete analysis, I would address this imbalance (up-sampling, down-sampling, or bootstrapping), but for this problem, I will assume we aren't introducing too much bias.
+
+```{r}
+# Create new binary column, Adelie or not
+df <- df %>%
+  mutate(Gentoo = ifelse(species == 'Gentoo', 1, 0)) %>%
+  dplyr::select(-species)
+```
+
+#### Handle NAs
+
+We know from the summary above that we have a few NAs.  However, it is useful to know how those NAs cluster before making any decisions on how to handle them.
+
+```{r}
+# show missing data
+gg_miss_upset(df)
+```
+
+We have some NAs that need handling.  Since 2 records are missing most of their data, I'll drop those entirely.  This leave 9 records missing the `sex` feature.  Since `sex` might be meaningful we can either KNN impute or drop those rows.  Since we only have a few rows, I am going to drop them for convenience.  If there had been a larger number then we would have to consider whether to drop the feature.  If we chose to impute, thge best strategy would be KNN imputing based on other row features; however, while imputing is a go to strategy, it does in fact carry the risk of biasing our data by reducing variance.  All impute techniques run this risk - when we fill in values with mean, median, or imputed, we are artificially weighing our data.  This can work in our favor, but can also work against us.  AS such, the decision to impute should be explored in more depth given the specific problem. 
+
+```{r}
+# remove rows with NAs
+df_na <- na.omit(df)
+```
+
+#### Dummy Code Categorical
+
+Our `island` feature is categorical - for machine learning, we really need everything recoded as numeric.  I will do a simple dummy encoding for `island` which will generate 3 new binary columns, one for each island.  Note, dummy coding can be done with or without an intercept.  I'll skip so we will have 3 columns, not 2.
+
+```{r}
+# dummy encode our categorical `island`
+dummies <- dummyVars(Gentoo ~ ., drop2nd=TRUE, data = df_na)
+df_imp <- data.frame(predict(dummies, newdata = df_na))
+
+df_dum <- df_imp
+df_dum$island.Biscoe <- as.factor(df_dum$island.Biscoe)
+df_dum$island.Dream <- as.factor(df_dum$island.Dream)
+df_dum$island.Torgersen <- as.factor(df_dum$island.Torgersen)
+df_dum$sex.female <- as.factor(df_dum$sex.female)
+df_dum$sex.male <- as.factor(df_dum$sex.male)
+df_dum$year <- as.factor(as.character(df_dum$year))
+
+skim(df_dum)
+# Note that dummyVars dropped our `Gentoo` column ... I'll have to add that back in a later step
+```
+
+#### Multicollinearity
+
+Between feature correlations are a huge problem for standard linear and logistic regressions.  There are better techniques for which multicollinearity is not an issue.  The problem with multicollinearity is that our algorithms cannot tease out which variables are contributing to the outcome when they are correlated.  When we see correlated features, we need to arbitrarily remove some or reach for a between technique like PCA which reframes the features into a new set with complete independence.  The problem with PCA is that we loose all explainibility of the features in our model.  Typically we do a forward or reverse step-wise approach to select the minimal set of features which provide the best model performance. 
+
+```{r}
+# Calculate and plot the Multicollinearity
+correlation = cor(df_imp, use = 'pairwise.complete.obs')
+
+corrplot(correlation, 'ellipse', type = 'lower', order = 'hclust',
+         col=brewer.pal(n=8, name="RdYlBu"))
+```
+
+We see some strong correlations between the features - this multicollinearity will be an issues with any standard linear regression approaches.  If we are wanting the best model possible, we might need to consider an approach like PCA to reframe our features into a set that are independent.  We also notice in this plot that bill length, body mass and flipper length are more strongly negatively correlated with being Gentoo - I'm assuming this means Gentoo penguins are larger in stature.  We also see that Gentoo penguins are more likely to be found on the Biscoe Island and have a smaller bill depth that other penguins.  
+
+### Feature-Target Correlation
+
+For linear and logistic regressions, we need to ensure there is a direct relationship between changes in each feature and our target outcome.  More specifically, there should be a linear relationship.  We can employ transformations, BoxCox, etc to help tease variables which don't show a linear relationship.
+
+Now lets explore any correlations between features and with the target, `Gentoo`.
+
+```{r}
+df_na$Gentoo <- as.factor(df_na$Gentoo)
+
+# Bar plot Gentoo by Island
+ggplot(data = df_na) +
+  geom_bar(aes(x = factor(island), fill = factor(Gentoo)), position = "fill")
+
+# grouped boxplot
+ggplot(df_na, aes(x=island, y=bill_length_mm, fill=Gentoo)) + 
+    geom_boxplot()
+
+ggplot(df_na, aes(x=island, y=bill_depth_mm, fill=Gentoo)) + 
+    geom_boxplot()
+
+ggplot(df_na, aes(x=island, y=body_mass_g, fill=Gentoo)) + 
+    geom_boxplot()
+
+# Show feature correlations/target by decreasing correlation
+df_imp$Gentoo <- as.numeric(as.character(df_na$Gentoo))
+stack(sort(cor(df_imp[, 11], df_imp[, 1:ncol(df_imp)-1])[,], decreasing=TRUE))
+```
+We see that `bill_depth_mm`, `isalnd.Torgersen`, `flipper_length_mm`, and `bill_length_mm` have the strongest correlations with `Gentoo`; however, as we saw, there are also multicollinearity within these features.
+
+Note - I'll leave all features for now and use stepAIC() in the modeling step below to identify the most important features that improve model performance.  This will remove correlated features leaving us with a model containing only those features which offere the most explanitory value in the model.
+
+### Modeling 
+
+#### Training-Test Split
+
+We were not given a separate hold out group - so to better measure model performance agains unseen samples, I'll set aside 20% of our initial data as a holdout Test group.  While this may slightly lower our training performanac (few samples means less information captured by the model), the trade-off is that we can idenitfy under- and over-fitting and better measure model performance.
+
+```{r}
+# --- Setup Training and Test datasets
+set.seed(3456)
+trainIndex <- createDataPartition(df_imp$Gentoo, p = .8, list = FALSE, times = 1)
+
+pengTrain <- df_imp[ trainIndex,]
+pengTest  <- df_imp[-trainIndex,]
+```
+
+#### Modeling
+
+We train our Logistic regression on the Training Data only.  I'll than do a stepAIC to identify the most important features to include.
+
+```{r warning=FALSE}
+# Note, I'm including all features and will use stepAIC in next step to forward/backward do feature selection
+pengTrain$Gentoo <- as.factor(pengTrain$Gentoo)
+pengTest$Gentoo <- as.factor(pengTest$Gentoo)
+
+model_1 <- train(Gentoo ~ island.Biscoe + island.Dream + island.Torgersen + bill_length_mm + 
+                 bill_depth_mm + flipper_length_mm + body_mass_g + year + sex.female + sex.male, 
+               data = pengTrain, family = "binomial"
+)
+
+```
+
+#### Evaluate Model
+
+Evaluating against our Training data:
+
+```{r}
+train_pred <- as.factor(predict(model_1, newdata = pengTrain))
+confusionMatrix(train_pred, pengTrain$Gentoo)
+```
+
+Evaluating our model with the holdout Test data:
+
+```{r}
+test_pred <- as.factor(predict(model_1, newdata = pengTest))
+confusionMatrix(test_pred, pengTest$Gentoo)
+```
+
+Now, check variable importance:
+
+```{r}
+imp <- as.data.frame(varImp(model_1$finalModel))
+imp <- data.frame(overall = imp$Overall, names = rownames(imp))
+imp[order(imp$overall,decreasing = T),]
+```
+
+As we see, caret has found that the two features `flipper_length_mm`, `bill_depth_mm`, and `body_mass_g` are the most important features.  Let's try building a model with only these features and see how it performs.
+
+```{r}
+model_2 <- train(Gentoo ~ bill_depth_mm + flipper_length_mm + body_mass_g, 
+               data = pengTrain, family = "binomial"
+)
+
+train_pred <- as.factor(predict(model_2, newdata = pengTrain))
+confusionMatrix(train_pred, pengTrain$Gentoo)
+
+test_pred <- as.factor(predict(model_2, newdata = pengTest))
+confusionMatrix(test_pred, pengTest$Gentoo)
+```
+
+This new model performs almost as well as our original that included all features.  With the new model, we had one incorrect prediction in the holdout group.  This new model is an improvement and is more parsimonious relative to our first model. 
+
+## 2. Model Performance
+
+> See above
+
+## 3. Multinomial Regression
+
+```{r warning=FALSE}
+# --- reload our data - I modified the df dataframe above
+df <- penguins %>% 
+  as_tibble()
+
+df$species <- as.factor(df$species)
+
+# --- remove rows with NAs
+df_na <- na.omit(df)
+
+# --- dummy encode our categorical `island`
+dummies <- dummyVars(species ~ ., drop2nd=TRUE, data = df_na)
+df_imp <- data.frame(predict(dummies, newdata = df_na))
+df_imp$species <- df_na$species
+
+# --- Setup Training and Test datasets
+set.seed(3456)
+trainIndex <- createDataPartition(df_imp$species, p = .8, list = FALSE, times = 1)
+
+pengTrain <- df_imp[ trainIndex,]
+pengTest  <- df_imp[-trainIndex,]
+
+# --- Build a multinomial model
+model_3 <- multinom(species ~ ., data=pengTrain)
+summary(model_3)
+
+# --- Evaluate our model
+train_pred <- as.factor(predict(model_3, newdata = pengTrain))
+confusionMatrix(train_pred, pengTrain$species)
+
+test_pred <- as.factor(predict(model_3, newdata = pengTest))
+confusionMatrix(test_pred, pengTest$species)
+
+tidy(model_3)
+glance(model_3)
+```
+
+The multinomial regression with no extra work was able to correctly classify all three species in both the training and hold-out test data set.  One has to love toy datasets that behave nothing like real world data.
+
+## 4. Bonus Problem
+
+
+
