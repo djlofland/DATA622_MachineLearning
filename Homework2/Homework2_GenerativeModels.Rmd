@@ -1,0 +1,306 @@
+---
+title: 'DS 622: Homwork 2 (Penguins Continued)'
+subtitle: 'Generative Models'
+author: 'Donny Lofland'
+data: '3/19/2021'
+output:
+  html_document:
+    theme: cerulean
+    highlight: pygments
+    css: ./lab.css
+    toc: true
+    toc_float: true
+    code_folding: hide
+  pdf_document:
+    extra_dependencies: ["geometry", "multicol", "multirow", "xcolor"]
+---
+
+Source Code: [https://github.com/djlofland/DATA622_MachineLearning/tree/master/Homework2](https://github.com/djlofland/DATA622_MachineLearning/tree/master/Homework2)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+library(palmerpenguins)
+library(ggplot2)
+library(tibble)
+library(tidyr)
+library(tidyverse)
+library(dplyr)
+
+library(skimr)
+library(caret)
+library(naniar)
+library(RANN)
+library(MASS)
+
+library(corrplot)
+library(RColorBrewer)
+library(broom)
+library(mnlogit)
+library(nnet)
+library(broom)
+
+set.seed(424242)
+```
+
+## Instructions
+
+Let’s use the Penguin dataset for our assignment. To learn more about the dataset, please visit: [https://allisonhorst.github.io/palmerpenguins/articles/intro.html](https://allisonhorst.github.io/palmerpenguins/articles/intro.html)
+
+We will be working with the Penguin dataset again as we did for Homework #1.
+Please use “Species” as your target variable. For this assignment, you may want to
+drop/ignore the variable “year”.
+
+Using the target variable, Species, please conduct:
+
+1) Linear Discriminant Analysis (30 points):
+
+a. You want to evaluate all the ‘features’ or dependent variables and see what should be in your model. Please comment on your choices.
+
+b. Just a suggestion: You might want to consider exploring featurePlot
+on the caret package. Basically, you look at each of the
+features/dependent variables and see how they are different based on
+species. Simply eye-balling this might give you an idea about which
+would be strong ‘classifiers’ (aka predictors).
+
+c. Fit your LDA model using whatever predictor variables you deem
+appropriate. Feel free to split the data into training and test sets
+before fitting the model.
+
+d. Look at the fit statistics/ accuracy rates.
+
+2) Quadratic Discriminant Analysis (30 points)
+
+a. Same steps as above to consider
+
+3) Naïve Bayes (30 points)
+
+a. Same steps as above to consider
+
+4) Comment on the models fits/strength/weakness/accuracy for all these three models that you worked with. (10 points)
+
+
+## Load Data & EDA
+
+```{r}
+# Load dataframe
+df <- penguins %>% 
+  as_tibble()
+
+# drop the year column
+df <- df %>% 
+  dplyr::select(-year)
+
+# show summary infio
+skim(df)
+```
+
+### Plan of Attack
+
+Our data set has the following independent features:
+
+* **Geography** - `island` (Biscoe, Dream or TorgerSen)
+* **Bill Dimensions** - `bill_length_mm` and `bill_depth_mm`
+* **Flipper Dimensions** - `flipper_length_mm`
+* **Overall Weight** - `body_weight_g`
+* **Gender** - `sex`
+* **Year** - `year` ... I assume this is the year the penguin was measured
+
+Our Dependent variable is `species`, a categorical variable with 3 distinct values: `Adelie`, `Chinstrap`, and `Gentoo`.
+
+Per instructions, we will drop the `year` variable.  In theory, if we expected penguin characteristics to be changing over time (weather, access to food, ecological problems, etc), then `year` would be a potentially useful feature.  If we assume there are no dramatic time dependent shifts taking place, then `year` probably doesn't provide any additional resolution toward prediction.
+
+#### Handle NAs
+
+We know from the summary above that we have a few NAs.  However, it is useful to know how those NAs cluster before making any decisions on how to handle them.
+
+```{r}
+# show missing data
+gg_miss_upset(df)
+```
+
+We have some NAs that need handling.  Since 2 records are missing most of their data, I'll drop those entirely.  This leave 9 records missing the `sex` feature.  Since `sex` might be meaningful we can either KNN impute or drop those rows.  Since we only have a few rows, I am going to drop them for convenience.  If there had been a larger number then we would have to consider whether to drop the feature.  If we chose to impute, the best strategy would be KNN imputing based on other row features; however, while imputing is a "go to" strategy, it does in fact carry the risk of biasing our data by reducing variance.  All impute techniques run this risk - when we fill in values with mean, median, or imputed, we are artificially weighing our data.  This can work in our favor by, but can also work against us.  As such, the decision to impute should be explored in more depth given the specific problem.
+
+```{r}
+# remove rows with NAs
+df <- na.omit(df)
+```
+
+#### Dummy Code Categorical
+
+Our `island` feature and `species` outcome are categorical - for machine learning, we really need everything coded as numeric.  I will do a simple dummy encoding for `island` which will generate 3 new binary columns, one for each island.  Note, dummy coding can be done with or without an intercept.  I'll skip so we will have 3 columns, not 2.  For `species` prediction, we prefer to only have a single column.  A typical strategy is to code with a numerical substitute for character values.  Since we have 3 outcomes, we can map these to 1, 2 and 3.
+
+```{r}
+# convert species to a factor
+species <- as.factor(df$species)
+
+# dummy encode our categorical `island`
+dummies <- dummyVars(species ~ ., drop2nd=TRUE, data = df)
+df <- data.frame(predict(dummies, newdata = df))
+
+df$species <- species
+
+skim(df)
+
+rm(dummies)
+rm(species)
+```
+
+#### Multicollinearity
+
+Between feature correlations are a huge problem for most regressions.  There are better techniques for which multicollinearity is not an issue.  The problem with multicollinearity is that our algorithms cannot tease out which variables are contributing to the outcome when they are correlated.  When we see correlated features, we need to arbitrarily remove some or reach for a technique like PCA which transforms the features into a new dimensional space with complete independence.  The problem with PCA is that we loose all explainibility of the features in our model.  Typically we do a forward or reverse step-wise approach to select the minimal set of features which provide the best model performance. 
+
+```{r}
+# Calculate and plot the Multicollinearity
+correlation = cor(df[,-10], use = 'pairwise.complete.obs')
+
+corrplot(correlation, 'ellipse', type = 'lower', order = 'hclust',
+         col=brewer.pal(n=8, name="RdYlBu"))
+
+rm(correlation)
+```
+
+```{r}
+# Show feature correlations/target by decreasing correlation
+df$speciesNumeric <- as.numeric(df$species)
+stack(sort(cor(df[,1:9], df[, 11])[,], decreasing=TRUE))
+```
+
+We see some strong correlations between the features - this multicollinearity will be an issues with any standard linear regression approaches.  If we are wanting the best model possible, we might need to consider an approach like PCA to reframe our features into a set that are independent.  We also notice in this plot that `bill_length_mm`, `body_mass_g`, and `flipper_length_mm` are more strongly correlated.  We also see these features positively correlated with both Biscoe Island and being male.  Next, we see that `flipper_length_mm`, `body_mass-g`, `bill_length_mm`, and `island.Biscoe` have the highest correlations with the target `species`.
+
+#### Feature-Target Correlation
+
+For regressions, we need to ensure there is a direct relationship between changes in each feature and our target outcome.  Ideally, there should be a linear relationship.  We can employ transformations, BoxCox, etc to help tease variables which don't show a linear relationship.
+
+Now lets explore any correlations between features and with the target.  Note I separate Male and Female into separate chart.
+
+```{r fig.height=12, fig.width=12}
+males <- df %>% 
+  dplyr::filter(sex.male == 1) %>% 
+  dplyr::select(-c(sex.male, sex.female))
+
+featurePlot(x=males[,1:7], y=males[,8], plot="pairs", auto.key=list(columns=3))
+
+females <- df %>% 
+  dplyr::filter(sex.female == 1) %>% 
+  dplyr::select(-c(sex.male, sex.female))
+
+featurePlot(x=females[,1:7], y=females[,8], plot="pairs", auto.key=list(columns=3))
+
+rm(males)
+rm(females)
+```
+
+#### Training-Test Split
+
+We were not given a separate hold out group - so to better measure model performance against unseen samples, I'll set aside 20% of our initial data as a holdout Test group.  While this may slightly lower our training performance (few samples means less information captured by the model), the trade-off is that we can identify under- and over-fitting and better measure model performance.
+
+```{r}
+# --- Setup Training and Test datasets
+set.seed(3456)
+trainIndex <- createDataPartition(df$species, p = .8, list = FALSE, times = 1)
+
+pengTrain <- df[ trainIndex,]
+pengTest  <- df[-trainIndex,]
+
+# Cross validation setup for caret modeling
+ctrl <- trainControl(method = 'cv', 
+                     number = 10,
+                     classProbs = T,
+                     savePredictions = TRUE)
+```
+
+## 1. Linear Discriminate Analysis
+
+We train our model on the Training Data only, assess performance, then separately predict from the holdout test set and use that for final model performance.  
+I only included a subset of features based on EDA above: `island.Biscoe`, bill_length_mm`, `bill_depth_mm`, `flipper_length_mm`, and `body_mass_g`.  
+
+```{r warning=FALSE}
+library(pROC)
+
+lda_model <- train(species ~ island.Biscoe + bill_length_mm + bill_depth_mm + flipper_length_mm + body_mass_g, 
+               data = pengTrain, 
+               method="lda",
+               trControl = ctrl
+)
+
+summary(lda_model)
+varImp(lda_model)
+
+# --- Evaluate our model
+train_pred <- as.factor(predict(lda_model, newdata = pengTrain))
+confusionMatrix(train_pred, pengTrain$species)
+
+test_pred <- as.factor(predict(lda_model, newdata = pengTest))
+confusionMatrix(test_pred, pengTest$species)
+
+# save final performance for later comparison
+modelValues <- data.frame(obs = pengTest$species, pred=test_pred)
+colnames(modelValues) = c('obs', 'pred')
+(lda_values <- defaultSummary(modelValues))
+```
+
+## 2. Quadratic Discriminant Analysis
+
+Note, I had problems running straight `qda()` within caret and `train()`.  So, I went ahead and used stepDQA which applies a stepwise feature selection and evaluation using QDA.
+
+```{r warning=FALSE}
+qda_model <- train(species ~ island.Biscoe + bill_length_mm + bill_depth_mm + flipper_length_mm + body_mass_g, 
+                   data = pengTrain, 
+                   method="stepQDA",
+                   trControl = ctrl,
+                   metric = "Accuracy"
+)
+
+summary(qda_model)
+varImp(qda_model)
+
+# --- Evaluate our model
+train_pred <- as.factor(predict(qda_model, newdata = pengTrain))
+confusionMatrix(train_pred, pengTrain$species)
+
+test_pred <- as.factor(predict(qda_model, newdata = pengTest))
+confusionMatrix(test_pred, pengTest$species)
+
+# save final performance for later comparison
+modelValues <- data.frame(obs = pengTest$species, pred=test_pred)
+colnames(modelValues) = c('obs', 'pred')
+(qda_values <- defaultSummary(modelValues))
+```
+
+## 3. Naive Bayes
+
+```{r warning=FALSE}
+nb_model <- train(species ~ island.Biscoe + bill_length_mm + bill_depth_mm + flipper_length_mm + body_mass_g, 
+                  data = pengTrain, 
+                  method="nb",
+                  rControl = ctrl
+)
+
+summary(nb_model)
+varImp(nb_model)
+
+# --- Evaluate our model
+train_pred <- as.factor(predict(nb_model, newdata = pengTrain))
+confusionMatrix(train_pred, pengTrain$species)
+
+test_pred <- as.factor(predict(nb_model, newdata = pengTest))
+confusionMatrix(test_pred, pengTest$species)
+
+# save final performance for later comparison
+modelValues <- data.frame(obs = pengTest$species, pred=test_pred)
+colnames(modelValues) = c('obs', 'pred')
+(nb_values <- defaultSummary(modelValues))
+```
+
+## 4. Compare models
+
+```{r}
+
+
+(models_summary <- rbind(lda_values, qda_values, nb_values))
+```
+
+All three models performed extremely well with LDA doing best.  Given how well these performed, it might be worth learning these modeling techniques with a different data set where we do see differences and can relate those to how the model work.  I would note that the classes had fairly good separation which problably led to good LDA performance.  Naive Bayes makes an assumption of independence of features which might explain it's poorer performance.  We didn't do anything to handle multicolinearity.  These models performed sufficiently that I did not go back and do further feature cleanup.  If model performance had been lower, I would have considered normalizing my features (center, scale. and potentially BoxCox), but that just wasn't necessary.  
