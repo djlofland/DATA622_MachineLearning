@@ -181,17 +181,25 @@ males <- df %>%
   dplyr::filter(sex.male == 1) %>% 
   dplyr::select(-c(sex.male, sex.female))
 
-featurePlot(x=males[,1:7], y=males[,8], plot="pairs", auto.key=list(columns=3))
+featurePlot(x=males[,1:7], y=males[,8], 
+            plot="pairs", 
+            main = 'Male Penguin FeaturePlot',
+            auto.key=list(columns=3))
 
 females <- df %>% 
   dplyr::filter(sex.female == 1) %>% 
   dplyr::select(-c(sex.male, sex.female))
 
-featurePlot(x=females[,1:7], y=females[,8], plot="pairs", auto.key=list(columns=3))
+featurePlot(x=females[,1:7], y=females[,8], 
+            plot="pairs", 
+            main = 'Female Penguin FeaturePlot',
+            auto.key=list(columns=3))
 
 rm(males)
 rm(females)
 ```
+
+These paired feature plots illustrate how the different species have distinct clustering (different colors).  Gentoo for example has a larger body and flipper length, but it's bill is smaller in depth.  By using pairs of features at a time, we can more easily see the feature separation.  The island features (dummy variables) only allow for a 0 to 1, but with those columns we can see which islands penguins are found on.  Biscoe has Adelie and Gentoo, whereas Dream has Adelie and Chinstrap.  On Torgersen, we only see Adelie.  
 
 #### Training-Test Split
 
@@ -225,14 +233,27 @@ lda_model <- train(species ~ island.Biscoe + bill_length_mm + bill_depth_mm + fl
                method="lda",
                trControl = ctrl
 )
+```
 
+#### Training Performance
+
+```{r warning=F}
+
+print('Training Performance')
 summary(lda_model)
 varImp(lda_model)
 
 # --- Evaluate our model
 train_pred <- as.factor(predict(lda_model, newdata = pengTrain))
 confusionMatrix(train_pred, pengTrain$species)
+```
 
+Overall accuracy was 0.9888, which on the surface is quite good and the model p-value shows it was quite significant.  That said, I've included a confusion matrix and per-class Sensitivity and Specificity so we can better understand mis-classifications.  R uses a one against many approach to calculate these. Sensitivity is TP/(TP+FN) and Specificity is TN / (TN + FP).  In the variable importance table, we can see which features were most useful for predicting each class.  Generally the order of importance was the same across species with `island.Biscoe` and `flipper_length_mm` being th emost important features for classification. Notice that `bill_length_mm` and `bill_depth_mm` importance were switched in Gentoo relative to the other 2 species.
+
+#### Holdout Test Performance
+
+```{r}
+print('Holdout Test Performance')
 test_pred <- as.factor(predict(lda_model, newdata = pengTest))
 confusionMatrix(test_pred, pengTest$species)
 
@@ -242,9 +263,11 @@ colnames(modelValues) = c('obs', 'pred')
 (lda_values <- defaultSummary(modelValues))
 ```
 
+The performance against the holdout group is important to ensure our model is generalized (no overfitting) and can handle new data points not seen during training.  Again, accuracy is quite good and slightly lower (as we would expect with new data) at 0.9864.  Again, I included a confusion matrix to understand how the model is erroring per class.  I provide the Sensitivity and Specificity per class.   
+
 ## 2. Quadratic Discriminant Analysis
 
-Note, I had problems running straight `qda()` within caret and `train()`.  So, I went ahead and used stepDQA which applies a stepwise feature selection and evaluation using QDA.
+Note, I had problems running straight `qda()` within caret and `train()`.  So, I went ahead and used stepQDA which applies a stepwise feature selection and evaluation using QDA.
 
 ```{r warning=FALSE}
 qda_model <- train(species ~ island.Biscoe + bill_length_mm + bill_depth_mm + flipper_length_mm + body_mass_g, 
@@ -253,6 +276,11 @@ qda_model <- train(species ~ island.Biscoe + bill_length_mm + bill_depth_mm + fl
                    trControl = ctrl,
                    metric = "Accuracy"
 )
+```
+
+#### Training Performance
+
+```{r}
 
 summary(qda_model)
 varImp(qda_model)
@@ -260,7 +288,13 @@ varImp(qda_model)
 # --- Evaluate our model
 train_pred <- as.factor(predict(qda_model, newdata = pengTrain))
 confusionMatrix(train_pred, pengTrain$species)
+```
 
+As with LDA above, I provide accuracy, a confusion matrix, per-class performance (Sensitivity and Selectivity) and variable importance.  Notice that our accuracy=0.9515 was lower than we saw in LDA.  Unlike LDA which correctly identify every Gentoo, QDA missed 5 times - four times by incorrectly predicting Gentoo (FP) and once where it failed to predict a Gentoo (FN).  This led to lower Specificity and Sensitvity.
+
+#### Holdout Test Performance
+
+```{r}
 test_pred <- as.factor(predict(qda_model, newdata = pengTest))
 confusionMatrix(test_pred, pengTest$species)
 
@@ -270,7 +304,11 @@ colnames(modelValues) = c('obs', 'pred')
 (qda_values <- defaultSummary(modelValues))
 ```
 
+Accuracy with the holdout group was similar to the training data with accuracy=0.9538.  Again, in the confusion matrix we can see where the mistakes were made.  There were fewer mistakes, but the holdout group only had 20% of the total samples.  Please refer to the confusion matrix and per-class Sensitivity and Specificity metrices provided.
+
 ## 3. Naive Bayes
+
+Before starting, keep in mind that a fundamental assumption for Naive Bayes (any why it's "Naive") is independence of features.  Multicollinearity is a problem and leads to poorer predictive power with this technique.  We already know there is inherent feature correlations so I would anticipate NB to perform worse that other modeling techniques.
 
 ```{r warning=FALSE}
 nb_model <- train(species ~ island.Biscoe + bill_length_mm + bill_depth_mm + flipper_length_mm + body_mass_g, 
@@ -278,14 +316,24 @@ nb_model <- train(species ~ island.Biscoe + bill_length_mm + bill_depth_mm + fli
                   method="nb",
                   rControl = ctrl
 )
+```
 
+#### Training Performance
+
+```{r}
 summary(nb_model)
 varImp(nb_model)
 
 # --- Evaluate our model
 train_pred <- as.factor(predict(nb_model, newdata = pengTrain))
 confusionMatrix(train_pred, pengTrain$species)
+```
 
+Naive Bayes had an accuracy=0.9776, which isn't too bad.  The provided confusion matrix and per-class Sensitivity and Specificity show that it correctly identify Gentto, but missed a few Adelie and Chinstrap predictions.
+
+#### Holdout Test Performance
+
+```{r warning=FALSE}
 test_pred <- as.factor(predict(nb_model, newdata = pengTest))
 confusionMatrix(test_pred, pengTest$species)
 
@@ -295,6 +343,8 @@ colnames(modelValues) = c('obs', 'pred')
 (nb_values <- defaultSummary(modelValues))
 ```
 
+Against Holdout data, accuracy was lower (0.9385) suggesting that the model didn't generalize as well with new data and may have overfitted during training.  THe model performed well at identifying Gentoo, but notice Chinstrap Sensitivity was quite low (0.7692) where it only predicted 10/13 of the CHinstrap penguins.  The model had trouble differentiating Adelie and Chinstrap, and our corresponding Adelie Specificity was lower (28/31 = 0.9167) since it incorrectly predicted 3 chinstrap as being Adelie.  Here we see the usefulness of Sensitivity and Specificity. 
+
 ## 4. Compare models
 
 ```{r}
@@ -303,4 +353,4 @@ colnames(modelValues) = c('obs', 'pred')
 (models_summary <- rbind(lda_values, qda_values, nb_values))
 ```
 
-All three models performed extremely well with LDA doing best.  Given how well these performed, it might be worth learning these modeling techniques with a different data set where we do see differences and can relate those to how the model work.  I would note that the classes had fairly good separation which problably led to good LDA performance.  Naive Bayes makes an assumption of independence of features which might explain it's poorer performance.  We didn't do anything to handle multicolinearity.  These models performed sufficiently that I did not go back and do further feature cleanup.  If model performance had been lower, I would have considered normalizing my features (center, scale. and potentially BoxCox), but that just wasn't necessary.  
+This summary looks at just the accuracy of holdout data using the 3 different modeling approaches.  All three models performed extremely well with LDA doing best and Naive Bayes the worst.  I would note that the classes had fairly good separation which probably led to good LDA performance.  Naive Bayes makes an assumption of independence of features which might explain it's poorer performance.  We didn't do anything to handle multicollinearity.  These models performed sufficiently that I did not go back and do further feature cleanup.  If model performance had been lower, I would have considered normalizing my features (center, scale. and potentially BoxCox), but that just wasn't necessary.  As a side note, given how well these models performed, it might be worth learning these modeling techniques with a different data set where we do see more differences and can relate those to how the models work and why we'd choose one over another.  
